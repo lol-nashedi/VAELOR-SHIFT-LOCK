@@ -1,0 +1,303 @@
+
+-- =============================================================================
+-- VÆLOR SHIFT LOCKKKKKKKK!!
+-- =============================================================================
+if not game:IsLoaded() then
+    pcall(function() game.Loaded:Wait() end)
+end
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    pcall(function() LocalPlayer = Players:GetPropertyChangedSignal("LocalPlayer"):Wait() end)
+    LocalPlayer = Players.LocalPlayer
+end
+
+local globalEnv = (getgenv and getgenv()) or _G
+local SCRIPT_ID = "Refined_ShiftLock_Singleton_Instance"
+
+if globalEnv[SCRIPT_ID] and type(globalEnv[SCRIPT_ID].Destroy) == "function" then
+    pcall(function() globalEnv[SCRIPT_ID].Destroy() end)
+    globalEnv[SCRIPT_ID] = nil
+    task.wait(0.05)
+end
+
+local Janitor = { Connections = {}, Instances = {}, RenderSteps = {}, Actions = {} }
+function Janitor:AddConnection(conn) table.insert(self.Connections, conn) return conn end
+function Janitor:AddInstance(ins) table.insert(self.Instances, ins) return ins end
+function Janitor:AddRenderStep(name) table.insert(self.RenderSteps, name) return name end
+function Janitor:AddAction(name) table.insert(self.Actions, name) return name end
+
+function Janitor.Destroy()
+    for _, conn in ipairs(Janitor.Connections) do if conn and conn.Connected then conn:Disconnect() end end
+    for _, ins in ipairs(Janitor.Instances) do if ins and ins.Parent then ins:Destroy() end end
+    local RunService = game:GetService("RunService")
+    for _, name in ipairs(Janitor.RenderSteps) do pcall(function() RunService:UnbindFromRenderStep(name) end) end
+    for _, name in ipairs(Janitor.Actions) do pcall(function() game:GetService("ContextActionService"):UnbindAction(name) end) end
+    local UserInputService = game:GetService("UserInputService")
+    local UserGameSettings = UserSettings():GetService("UserGameSettings")
+    UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+    pcall(function() UserGameSettings.RotationType = Enum.RotationType.MovementRelative end)
+    pcall(function() game:GetService("Players").LocalPlayer:GetMouse().Icon = "" end)
+end
+globalEnv[SCRIPT_ID] = Janitor
+
+-- =============================================================================
+-- --- 0. Creator Notification System ---
+-- =============================================================================
+local StarterGui = game:GetService("StarterGui")
+local TARGET_USERNAME = "N0T_Z0RO100"
+
+local function sendCreatorNotification(player)
+    if player.Name == TARGET_USERNAME then
+        task.spawn(function()
+            local success = false
+            while not success and globalEnv[SCRIPT_ID] == Janitor do
+                success = pcall(function()
+                    StarterGui:SetCore("SendNotification", {
+                        Title = "Script Creator",
+                        Text = player.DisplayName .. " is here",
+                        Duration = 5
+                    })
+                end)
+                if not success then task.wait(0.5) end
+            end
+        end)
+    end
+end
+Janitor:AddConnection(Players.PlayerAdded:Connect(sendCreatorNotification))
+for _, player in ipairs(Players:GetPlayers()) do sendCreatorNotification(player) end
+
+-- =============================================================================
+-- --- 1. GUI 系统 ---
+-- =============================================================================
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ContextActionService = game:GetService("ContextActionService") 
+local HapticService = game:GetService("HapticService") 
+
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui", 10)
+local UserGameSettings = UserSettings():GetService("UserGameSettings")
+
+local function SyncRotationSettings(enabled)
+    pcall(function()
+        if enabled then
+            if UserGameSettings.RotationType ~= Enum.RotationType.CameraRelative then
+                UserGameSettings.RotationType = Enum.RotationType.CameraRelative
+            end
+        else
+            if UserGameSettings.RotationType ~= Enum.RotationType.MovementRelative then
+                UserGameSettings.RotationType = Enum.RotationType.MovementRelative
+            end
+        end
+    end)
+end
+
+local ShiftLockGui = Instance.new("ScreenGui")
+ShiftLockGui.Name = "VÆLOR SHIFT LOCK"
+ShiftLockGui.ResetOnSpawn = false
+ShiftLockGui.Parent = PlayerGui
+Janitor:AddInstance(ShiftLockGui)
+
+local LockButton = Instance.new("ImageButton")
+LockButton.Name = "LockButton"
+LockButton.Parent = ShiftLockGui
+LockButton.AnchorPoint = Vector2.new(0.5, 0.5)
+LockButton.Position = UDim2.new(0.83, 0, 0.83, 0)
+LockButton.Size = UDim2.new(0.045, 0, 0.045, 0) 
+LockButton.BackgroundTransparency = 1 
+LockButton.Image = "rbxasset://textures/ui/mouseLock_off@2x.png"
+
+local UIAspect = Instance.new("UIAspectRatioConstraint")
+UIAspect.AspectRatio = 1
+UIAspect.AspectType = Enum.AspectType.ScaleWithParentSize
+UIAspect.Parent = LockButton
+
+local Crosshair = Instance.new("ImageLabel")
+Crosshair.Name = "Crosshair"
+Crosshair.Parent = ShiftLockGui
+Crosshair.AnchorPoint = Vector2.new(0.5, 0.5)
+Crosshair.Position = UDim2.new(0.5, 0, 0.5, -29)
+Crosshair.Size = UDim2.new(0, 32, 0, 32) 
+Crosshair.BackgroundTransparency = 1
+Crosshair.Image = "rbxasset://textures/MouseLockedCursor.png"
+Crosshair.Visible = false
+
+-- --- 2. 核心变量 ---
+local isShiftLockEnabled = false
+local OFFSET_VAL = 1.75 
+local isMobile = false 
+local MOUSE_SINK_ACTION = "DisableRightClickAction" 
+Janitor:AddAction(MOUSE_SINK_ACTION)
+
+local isCameraAnimated = false
+local animatedFrameCounter = 0 
+local currentTargetZoom = 12.5  
+local smoothedOffset = 0  
+local ANIMATION_SPEED = 18 
+local FIRST_PERSON_THRESHOLD = 0.999 
+
+-- --- 3. 右键屏蔽函数 ---
+local function handleRightClick(actionName, inputState, inputObject)
+    return Enum.ContextActionResult.Sink
+end
+
+-- --- 4. 核心同步逻辑 ---
+local function enforceShiftLock(deltaTime)
+    deltaTime = deltaTime or 0.016
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+
+    local character = LocalPlayer.Character
+    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+    local isDeadState = (not character or not humanoid or humanoid.Health <= 0 or not rootPart)
+    local isCurrentlyAnimated = false
+
+    if not isDeadState then
+        if cam.CameraType == Enum.CameraType.Scriptable or cam.CameraSubject ~= humanoid then
+            isCurrentlyAnimated = true
+        end
+    end
+    
+    if isCurrentlyAnimated then
+        animatedFrameCounter = 0 
+        isCameraAnimated = true
+    else
+        if animatedFrameCounter > 0 then
+            animatedFrameCounter = animatedFrameCounter - 1
+            isCameraAnimated = true 
+        else
+            isCameraAnimated = false 
+        end
+    end
+
+    if isShiftLockEnabled then
+        UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+        SyncRotationSettings(true)
+        Crosshair.Visible = (isCameraAnimated == false) and isMobile
+        
+        pcall(function()
+            if LocalPlayer.DevCameraOcclusionMode ~= Enum.DevCameraOcclusionMode.Invisicam then
+                LocalPlayer.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
+            end
+        end)
+    else
+        Crosshair.Visible = false
+    end
+
+    local dynamicInvisicamDistance = currentTargetZoom
+    if cam.Focus then
+        dynamicInvisicamDistance = (cam.Focus.p - cam.CFrame.p).Magnitude
+    end
+
+    local isFirstPerson = (dynamicInvisicamDistance < FIRST_PERSON_THRESHOLD)
+    local targetOffset = (isShiftLockEnabled and not isFirstPerson and not isCameraAnimated) and OFFSET_VAL or 0
+    
+    -- 无动画直接硬切偏移量（测试模式）
+    smoothedOffset = targetOffset
+
+    if smoothedOffset ~= 0 or isShiftLockEnabled then 
+        local shiftedCFrame = cam.CFrame * CFrame.new(smoothedOffset, 0, 0)
+        cam.CFrame = shiftedCFrame
+        cam.Focus = shiftedCFrame * CFrame.new(0, 0, -dynamicInvisicamDistance)
+    end
+end
+
+-- --- 5. Toggle 切换函数 ---
+local function ToggleShiftLock(forceState)
+    if forceState ~= nil then isShiftLockEnabled = forceState else isShiftLockEnabled = not isShiftLockEnabled end
+
+    task.spawn(function()
+        local gamepad = Enum.UserInputType.Gamepad1 
+        if HapticService:IsVibrationSupported(gamepad) then
+            pcall(function() HapticService:SetMotor(gamepad, Enum.VibrationMotor.Large, 0.4) task.wait(0.05) HapticService:SetMotor(gamepad, Enum.VibrationMotor.Large, 0) end)
+        end
+    end)
+    
+    if isShiftLockEnabled then
+        LockButton.Image = "rbxasset://textures/ui/mouseLock_on@2x.png"
+        LocalPlayer:GetMouse().Icon = "rbxasset://textures/MouseLockedCursor.png"
+        SyncRotationSettings(true)
+        
+        if not isMobile then
+            ContextActionService:BindActionAtPriority(
+                MOUSE_SINK_ACTION, handleRightClick, false, 
+                Enum.ContextActionPriority.High.Value + 100, Enum.UserInputType.MouseButton2
+            )
+        end
+        
+        pcall(function()
+            UserGameSettings.ComputerCameraMovementMode = Enum.ComputerCameraMovementMode.Classic
+            UserGameSettings.TouchCameraMovementMode = Enum.TouchCameraMovementMode.Classic
+        end)
+    else
+        LockButton.Image = "rbxasset://textures/ui/mouseLock_off@2x.png"
+        LocalPlayer:GetMouse().Icon = ""
+        ContextActionService:UnbindAction(MOUSE_SINK_ACTION)
+        SyncRotationSettings(false)
+        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+        
+        pcall(function()
+            LocalPlayer.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Zoom
+        end)
+    end
+end
+
+RunService:UnbindFromRenderStep("ShiftLock_Sync")
+RunService:BindToRenderStep("ShiftLock_Sync", Enum.RenderPriority.Camera.Value + 1, enforceShiftLock)
+Janitor:AddRenderStep("ShiftLock_Sync")
+
+-- --- 6. 设备动态切换逻辑 ---
+local function UpdateDeviceUI(lastInputType)
+    isMobile = (lastInputType == Enum.UserInputType.Touch)
+    LocalPlayer.DevEnableMouseLock = false 
+
+    if isMobile then
+        LockButton.Visible = true
+        ContextActionService:UnbindAction(MOUSE_SINK_ACTION) 
+    else
+        LockButton.Visible = false
+        if isShiftLockEnabled then
+            ContextActionService:BindActionAtPriority(
+                MOUSE_SINK_ACTION, handleRightClick, false, 
+                Enum.ContextActionPriority.High.Value + 100, Enum.UserInputType.MouseButton2
+            )
+        end
+    end
+end
+
+-- --- 7. 事件绑定 ---
+Janitor:AddConnection(UserInputService.PointerAction:Connect(function(wheelDelta)
+    if wheelDelta ~= 0 then
+        currentTargetZoom = wheelDelta > 0 and math.max(0.6, currentTargetZoom - 1.5) or math.min(LocalPlayer.CameraMaxZoomDistance, currentTargetZoom + 1.5)
+    end
+end))
+
+Janitor:AddConnection(UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if not isMobile and (input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.RightShift) then
+        ToggleShiftLock()
+    end
+end))
+
+Janitor:AddConnection(LockButton.MouseButton1Click:Connect(function() if isMobile then ToggleShiftLock() end end))
+Janitor:AddConnection(UserInputService.LastInputTypeChanged:Connect(UpdateDeviceUI))
+UpdateDeviceUI(UserInputService:GetLastInputType())
+
+Janitor:AddConnection(LocalPlayer.CharacterAdded:Connect(function(character)
+    currentTargetZoom = 12.5
+    smoothedOffset = 0 
+    if isShiftLockEnabled then
+        LocalPlayer:GetMouse().Icon = "rbxasset://textures/MouseLockedCursor.png"
+        SyncRotationSettings(true)
+        if not isMobile then
+            ContextActionService:BindActionAtPriority(MOUSE_SINK_ACTION, handleRightClick, false, Enum.ContextActionPriority.High.Value + 100, Enum.UserInputType.MouseButton2)
+        end
+    else
+        SyncRotationSettings(false)
+        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+    end
+end))
+
